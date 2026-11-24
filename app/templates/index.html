@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>랜섬웨어 정적 판별</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #656d76; --line: #d8dde3;
+    --accent: #2f6feb; --danger: #c62828; --danger-bg: #fdecec;
+    --ok: #1a7f37; --ok-bg: #e9f6ec; --warn: #8a5a00; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --card: #171b21; --text: #e6e9ed; --muted: #9aa4af; --line: #2c333c;
+      --accent: #6ea0ff; --danger: #ff8a80; --danger-bg: #3a1917;
+      --ok: #7ad18c; --ok-bg: #14301c; --warn: #f2c14e; --warn-bg: #3a2e10;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 20px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; padding-top: 20px; border-top: 1px solid var(--line); }
+  .lead { color: var(--muted); margin: 0 0 28px; }
+  .drop { display: block; border: 2px dashed var(--line); border-radius: 12px; background: var(--card);
+          padding: 44px 20px; text-align: center; cursor: pointer; transition: border-color .15s; }
+  .drop.over, .drop:focus-within { border-color: var(--accent); }
+  .drop strong { display: block; font-size: 17px; }
+  .drop span { color: var(--muted); font-size: 14px; }
+  .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .card { margin-top: 24px; background: var(--card); border: 1px solid var(--line);
+          border-radius: 12px; padding: 24px; }
+  .hidden { display: none; }
+  .verdict { display: inline-block; padding: 6px 16px; border-radius: 999px; font-weight: 600; font-size: 17px; }
+  .ransomware { color: var(--danger); background: var(--danger-bg); }
+  .benign { color: var(--ok); background: var(--ok-bg); }
+  .unsupported { color: var(--warn); background: var(--warn-bg); }
+  .name { margin: 14px 0 2px; font-weight: 600; word-break: break-all; }
+  .sub { color: var(--muted); font-size: 13px; word-break: break-all; margin: 0; }
+  .reason { margin: 14px 0 0; }
+  .error { color: var(--danger); }
+  dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 24px; margin: 0; }
+  dt { color: var(--muted); font-size: 13px; }
+  dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-all; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--muted); font-weight: 400; font-size: 13px; }
+  th, td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th.num, td.num { text-align: right; }
+  tr:last-child td { border-bottom: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .chips li { border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; font-size: 14px; }
+  .chips small { color: var(--muted); margin-left: 6px; }
+  .empty { color: var(--muted); font-size: 14px; margin: 0; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  footer li { margin-bottom: 4px; }
+  @media (max-width: 600px) { dl { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <h1>랜섬웨어 정적 판별</h1>
+  <p class="lead">Windows 실행 파일을 올리면 실행하지 않고 구조만 분석해 랜섬웨어 여부를 판정합니다.</p>
+
+  <label class="drop" id="drop">
+    <input type="file" id="file">
+    <strong>파일을 끌어다 놓거나 눌러서 선택하세요</strong>
+    <span>32비트 EXE · 최대 {{ max_upload_mb }}MB</span>
+  </label>
+
+  <section class="card hidden" id="status" aria-live="polite"></section>
+
+  <section class="card hidden" id="result" aria-live="polite">
+    <span class="verdict" id="verdict"></span>
+    <p class="name" id="name"></p>
+    <p class="sub" id="meta"></p>
+    <p class="reason hidden" id="reason"></p>
+    <div id="details"></div>
+  </section>
+
+  <footer>
+    <ul>
+      <li>정적 분석만 하므로 정상 판정이 안전을 보장하지 않습니다.</li>
+      <li>아래 파일 정보는 PE 헤더에 적힌 값 그대로이며, 조작된 파일은 사실과 다를 수 있습니다.</li>
+    </ul>
+  </footer>
+</main>
+
+<script>
+const drop = document.getElementById("drop");
+const input = document.getElementById("file");
+const statusBox = document.getElementById("status");
+const resultBox = document.getElementById("result");
+const el = (id) => document.getElementById(id);
+
+const LABELS = { ransomware: "랜섬웨어 의심", benign: "정상으로 판정", unsupported: "지원 범위 밖" };
+
+function make(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function showStatus(text, isError) {
+  statusBox.textContent = text;
+  statusBox.classList.toggle("error", Boolean(isError));
+  statusBox.classList.remove("hidden");
+}
+
+function renderDetails(details) {
+  const box = el("details");
+  box.replaceChildren();
+  if (!details) return;
+
+  for (const group of details.groups) {
+    box.append(make("h2", group.title));
+    const dl = make("dl");
+    for (const [label, value] of group.items) {
+      const item = make("div");
+      item.append(make("dt", label), make("dd", String(value)));
+      dl.append(item);
+    }
+    box.append(dl);
+  }
+
+  box.append(make("h2", "섹션 (" + details.sections.length + "개)"));
+  if (details.sections.length === 0) {
+    box.append(make("p", "섹션이 없습니다.", "empty"));
+  } else {
+    const table = make("table");
+    const head = make("tr");
+    for (const [title, cls] of [["이름", ""], ["크기", "num"], ["가상 크기", "num"], ["엔트로피", "num"], ["권한", ""]]) {
+      head.append(make("th", title, cls));
+    }
+    table.append(head);
+    for (const s of details.sections) {
+      const row = make("tr");
+      row.append(
+        make("td", s.name),
+        make("td", formatSize(s.size), "num"),
+        make("td", formatSize(s.vsize), "num"),
+        make("td", s.entropy.toFixed(2), "num"),
+        make("td", s.access || "-"),
+      );
+      table.append(row);
+    }
+    const wrap = make("div", undefined, "table-wrap");
+    wrap.append(table);
+    box.append(wrap);
+  }
+
+  box.append(make("h2", "가져온 DLL (" + details.imports.length + "개)"));
+  if (details.imports.length === 0) {
+    box.append(make("p", "가져온 DLL이 없습니다.", "empty"));
+  } else {
+    const list = make("ul", undefined, "chips");
+    for (const d of details.imports) {
+      const item = make("li", d.dll);
+      item.append(make("small", "함수 " + d.functions + "개"));
+      list.append(item);
+    }
+    box.append(list);
+  }
+}
+
+function showResult(r) {
+  statusBox.classList.add("hidden");
+  el("verdict").textContent = LABELS[r.status];
+  el("verdict").className = "verdict " + r.status;
+  el("name").textContent = r.filename;
+  el("meta").textContent = formatSize(r.size) + (r.sha256 ? " · SHA-256 " + r.sha256 : "");
+  el("reason").textContent = r.reason || "";
+  el("reason").classList.toggle("hidden", !r.reason);
+  renderDetails(r.details);
+  resultBox.classList.remove("hidden");
+}
+
+async function analyze(file) {
+  if (!file) return;
+  resultBox.classList.add("hidden");
+  showStatus("분석 중입니다: " + file.name);
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const response = await fetch("/predict", { method: "POST", body: form });
+    const body = await response.json();
+    if (!response.ok) { showStatus(body.error || "분석에 실패했습니다.", true); return; }
+    showResult(body);
+  } catch (error) {
+    showStatus("서버에 연결하지 못했습니다.", true);
+  }
+}
+
+input.addEventListener("change", () => { analyze(input.files[0]); input.value = ""; });
+for (const type of ["dragenter", "dragover"]) {
+  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add("over"); });
+}
+for (const type of ["dragleave", "drop"]) {
+  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.remove("over"); });
+}
+drop.addEventListener("drop", (e) => analyze(e.dataTransfer.files[0]));
+</script>
+</body>
+</html>

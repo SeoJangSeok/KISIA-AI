@@ -1,0 +1,32 @@
+# 데이터 폴더는 통째로 제외한다.
+# 랜섬웨어 샘플(data/ransomsample)은 어떤 형태로도 올리지 않는다.
+data/*
+
+# 앱 실행에 필요한 모델과 임계값만 예외로 올린다.
+!data/ransom_lgbm.txt
+!data/ransom_lgbm_info.json
+
+# 혹시 다른 위치에 생기더라도 큰 파일과 샘플 압축파일은 올리지 않는다.
+*.npy
+*.jsonl
+*.tgz
+*.dat
+
+# 노트북(추출·학습 과정)은 올리지 않는다. 내용은 README에 정리되어 있다.
+*.ipynb
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# 비밀 값
+.env
+
+# 개인 환경 파일
+.DS_Store
+.claude/
+.idea/
+.vscode/
